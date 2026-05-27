@@ -4,9 +4,7 @@
     type MidiStreamItem,
   } from "./MidiMonitor.store";
 
-  export let incoming:
-    | (MidiStreamItem & { data: MidiData })
-    | undefined = undefined;
+  export let incomingItems: (MidiStreamItem & { data: MidiData })[] = [];
 
   type CcScopePoint = {
     id: MidiStreamItem["id"];
@@ -32,14 +30,17 @@
   let lastSeenCc: { channel: number; cc: number; value: number } | undefined =
     undefined;
   let ignoredCount = 0;
-  let lastIncomingId: MidiStreamItem["id"] | undefined = undefined;
+  let lastProcessedBatchId: MidiStreamItem["id"] | undefined = undefined;
 
-  $: if (incoming && incoming.id !== lastIncomingId) {
-    lastIncomingId = incoming.id;
-    handleIncoming(incoming);
+  $: if (incomingItems.length > 0) {
+    const batchTailId = incomingItems[incomingItems.length - 1].id;
+    if (batchTailId !== lastProcessedBatchId) {
+      handleIncomingBatch(incomingItems);
+      lastProcessedBatchId = batchTailId;
+    }
   }
 
-  $: if (!incoming && lastIncomingId !== undefined) {
+  $: if (incomingItems.length === 0 && lastProcessedBatchId !== undefined) {
     resetScopeState();
   }
 
@@ -81,6 +82,12 @@
     { label: "Latest", value: latestValue ?? "---" },
     { label: "Range", value: rangeValue },
   ];
+
+  function handleIncomingBatch(items: (MidiStreamItem & { data: MidiData })[]) {
+    for (const item of items) {
+      handleIncoming(item);
+    }
+  }
 
   function handleIncoming(item: MidiStreamItem & { data: MidiData }) {
     if (!isControlChange(item)) {
@@ -161,7 +168,7 @@
     history = [];
     lastSeenCc = undefined;
     ignoredCount = 0;
-    lastIncomingId = undefined;
+    lastProcessedBatchId = undefined;
   }
 
   function handleManualSelection() {
