@@ -2,26 +2,47 @@
 
 This checklist defines the approval bar for the MIDI CC oscilloscope feature.
 
-The reviewer stance is strict: approve only if the feature is passive, bounded, visually adjacent, architecturally separate, and uses the existing decoded message stream. Anything deeper is scope creep.
+Approve only if the feature is passive, bounded, visually adjacent, architecturally separate, and uses the existing decoded message stream.
 
-## Top 10 safety checks
+## Safety checks
 
 | # | Check | Approval rule |
 |---:|---|---|
-| 1 | Exact data tap point | The oscilloscope must hook into the same decoded MIDI/message stream that feeds the existing MIDI Monitor. It must not use a second parser, firmware changes, or raw serial unless explicitly labeled as raw/debug. |
-| 2 | No transmit side effects | The oscilloscope must be read-only. Any path that can send MIDI, SysEx, package messages, config writes, firmware calls, or device mutations is a red flag. |
-| 3 | Bounded memory | Fixed-size buffers only. No infinite history, unbounded arrays, or clear-later assumptions. |
-| 4 | Render throttling | MIDI can be bursty. Scope UI updates should be batched on animation frames or another controlled cadence instead of causing a Svelte render on every message. |
-| 5 | Svelte lifecycle correctness | Be paranoid about subscriptions, stale state, requestAnimationFrame cleanup, timeout cleanup, worker cleanup, and component teardown because Grid Editor has had Svelte migration work around reactive variables and MIDI monitor behavior. |
-| 6 | Clear source labeling | Grid-originated messages, external MIDI input, package messages, SysEx, debug traffic, and protocol frames must not be visually conflated. |
-| 7 | MIDI Monitor isolation | Adjacent to MIDI Monitor means shared source, not entangled behavior. Existing monitor behavior should not slow down, change ordering, or inherit oscilloscope filters. |
-| 8 | Performance under abuse | Review for 10k+ message bursts, MIDI clock spam, encoder floods, SysEx-sized payloads, disconnected/reconnected devices, and hidden-tab behavior. |
-| 9 | Electron/security boundaries | Do not weaken preload, IPC, contextIsolation, renderer permissions, or Electron security settings for visualization convenience. |
-| 10 | Upstream survivability | Keep the diff small and boring: one contained component, one monitor seam, no broad package architecture changes, no firmware changes, and minimal shared-code edits. |
+| 1 | Exact data tap point | Use the same decoded MIDI message stream that feeds the existing MIDI Monitor. Do not add another parser, firmware path, or raw-device path. |
+| 2 | Read-only behavior | The oscilloscope only reads and displays decoded MIDI data. It must not send MIDI, write config, call firmware paths, or mutate devices. |
+| 3 | Bounded memory | Use fixed-size buffers only. |
+| 4 | Render cadence | Batch scope updates on animation frames or another controlled cadence. Do not render the scope once per incoming message. |
+| 5 | Svelte lifecycle | Clean up subscriptions, animation frames, timers, and workers. |
+| 6 | Source labeling | Show selected CC, RX/TX direction, and device name. Do not visually mix CC waveform data with SysEx or debug/protocol rows. |
+| 7 | MIDI Monitor isolation | The normal MIDI Monitor list must keep its ordering and behavior. Scope filters must not affect it. |
+| 8 | Stress behavior | Fast CC traffic and non-CC traffic should remain bounded and usable. |
+| 9 | App boundaries | Do not change Electron, preload, IPC, or renderer permission settings for this feature. |
+| 10 | Upstream survivability | Keep the diff small: one scope store, one component, one monitor seam, no firmware changes. |
 
-## Sprint 6 static review notes
+## Grid-native refinement notes
 
-### 1. Exact data tap point
+This implementation follows Grid Editor's existing graph style before considering Canvas:
+
+- `DebugMonitor.svelte` renders SVG `<polyline>` graphs for RX/TX data-rate display.
+- `DebugMonitor.store.ts` keeps bounded histories and converts histories into point strings.
+- `PolyLineGraph.svelte` and `PolyLineGraph.js` use a Svelte store, bounded values, SVG point strings, and simple stats.
+
+The CC scope mirrors that style:
+
+```text
+decoded MIDI Monitor stream
+  -> animation-frame batched MIDI items
+  -> CC-only MidiScope.store.ts
+  -> bounded selected-CC history
+  -> SVG polyline point string
+  -> CcScope.svelte display
+```
+
+Canvas should only be considered if local profiling shows SVG cannot handle real CC traffic.
+
+## Static review notes
+
+### Data path
 
 The scope is fed from `handleWorkerMessage` in `MidiMonitor.svelte`, after the existing MIDI worker has produced the same processed MIDI item used by the normal MIDI message list.
 
@@ -35,71 +56,27 @@ case MidiType.MIDI: {
 }
 ```
 
-This must remain a decoded MIDI Monitor data path. Do not add a second parser.
+### Store responsibility
 
-### 2. No transmit side effects
+`MidiScope.store.ts` filters already-decoded CC messages, maintains selected CC state, maintains a bounded history, and exposes an SVG point string plus stats.
 
-`CcScope.svelte` should have no imports from runtime managers, package managers, firmware paths, IPC/preload code, or device mutation services. It should receive data and render state only.
+`CcScope.svelte` should stay mostly presentational.
 
-### 3. Bounded memory
-
-Expected bounds:
-
-```ts
-const maxHistoryLength = 128;
-const maxScopeBatchLength = 1024;
-```
-
-The history buffer and pending frame batch must remain capped.
-
-### 4. Render throttling
-
-The parent monitor should batch scope updates through `requestAnimationFrame`, then pass the batch into `CcScope` once per frame. Do not bind every MIDI message directly into the scope prop.
-
-### 5. Lifecycle correctness
-
-Expected cleanup:
-
-- unsubscribe from `midi_stream`
-- terminate the worker
-- cancel pending animation frame
-- clear activity timer
-- mark monitor unmounted
-
-### 6. Source labeling
-
-The current UI labels the selected CC, last seen CC, MIDI Monitor direction, and device name through the existing monitor fields. Later polish may add explicit RX/TX badges in the scope itself, but the scope must not show SysEx or raw protocol frames as CC waveform data.
-
-### 7. MIDI Monitor isolation
-
-The normal MIDI list must continue updating through `midi_messages.update`. The scope must not filter or mutate the message list.
-
-### 8. Performance under abuse
-
-The current design is bounded, but local testing should still flood the monitor with CC traffic and MIDI clock-like non-CC messages. The expected behavior is that non-CC messages do not add waveform points and CC history remains capped.
-
-### 9. Electron/security boundaries
-
-No Electron/preload/IPC/security files should be touched by this feature.
-
-### 10. Upstream survivability
-
-The desired file footprint is:
+### Expected file footprint
 
 ```text
+src/renderer/main/panels/MidiMonitor/MidiScope.store.ts
 src/renderer/main/panels/MidiMonitor/CcScope.svelte
 src/renderer/main/panels/MidiMonitor/MidiMonitor.svelte
 docs/features/MIDI_CC_SCOPE_VALIDATION.md
 ```
-
-A broader diff should be treated as suspicious unless deliberately approved.
 
 ## Local validation script
 
 After checkout:
 
 ```bash
-git checkout feature/midi-cc-scope-sprint-6
+git checkout feature/midi-cc-scope-grid-native-refine
 npm i
 npm run electron-dev
 ```
@@ -120,4 +97,4 @@ Manual validation:
 | Resume | Waveform appends again. |
 | Clear Scope | Scope trace clears only. |
 | Clear All | Existing monitor and scope both reset. |
-| Abuse traffic | History remains capped and UI remains usable. |
+| Fast traffic | History remains capped and UI remains usable. |
