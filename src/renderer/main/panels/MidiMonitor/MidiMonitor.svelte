@@ -32,10 +32,8 @@
   let debug = false;
   let hover = false;
   let last: (MidiStreamItem & { data: MidiData }) | undefined = undefined;
-  let lastScopeItem: (MidiStreamItem & { data: MidiData }) | undefined =
-    undefined;
-  let pendingScopeItem: (MidiStreamItem & { data: MidiData }) | undefined =
-    undefined;
+  let scopeItems: (MidiStreamItem & { data: MidiData })[] = [];
+  let pendingScopeItems: (MidiStreamItem & { data: MidiData })[] = [];
   let scopeFrame: number | undefined = undefined;
   let unsubscribeMidiStream: Unsubscriber | undefined = undefined;
   let configScriptLength = 0;
@@ -50,6 +48,7 @@
   let debugMessageListHeight: number;
 
   const maxMessageCount = 1024;
+  const maxScopeBatchLength = 1024;
 
   let lastMidiMessageIndex = 0;
   let lastSysExMessageIndex = 0;
@@ -148,18 +147,22 @@
   }
 
   function queueScopeItem(item: MidiStreamItem & { data: MidiData }) {
-    pendingScopeItem = item;
+    pendingScopeItems = [...pendingScopeItems, item].slice(-maxScopeBatchLength);
     if (scopeFrame !== undefined) {
       return;
     }
 
-    scopeFrame = requestAnimationFrame(flushScopeItem);
+    scopeFrame = requestAnimationFrame(flushScopeItems);
   }
 
-  function flushScopeItem() {
+  function flushScopeItems() {
     scopeFrame = undefined;
-    lastScopeItem = pendingScopeItem;
-    pendingScopeItem = undefined;
+    if (pendingScopeItems.length === 0) {
+      return;
+    }
+
+    scopeItems = pendingScopeItems;
+    pendingScopeItems = [];
   }
 
   function handleUserInputChange(ui: UserInputValue) {
@@ -203,8 +206,8 @@
 
   function onClearClicked() {
     last = undefined;
-    lastScopeItem = undefined;
-    pendingScopeItem = undefined;
+    scopeItems = [];
+    pendingScopeItems = [];
     if (scopeFrame !== undefined) {
       cancelAnimationFrame(scopeFrame);
       scopeFrame = undefined;
@@ -331,7 +334,7 @@
       </div>
     </div>
 
-    <CcScope incoming={lastScopeItem} />
+    <CcScope incomingItems={scopeItems} />
   {/if}
 
   <div class="overflow-hidden flex flex-col h-full">
