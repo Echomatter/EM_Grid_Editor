@@ -4,7 +4,7 @@
     type UserInputValue,
   } from "./../../../runtime/user-input.store";
   import { Pane, Splitpanes } from "svelte-splitpanes";
-  import { get, writable, type Writable } from "svelte/store";
+  import { get, writable, type Writable, type Unsubscriber } from "svelte/store";
   import { debug_monitor_store } from "../DebugMonitor/DebugMonitor.store";
   import {
     midi_stream,
@@ -34,6 +34,10 @@
   let last: (MidiStreamItem & { data: MidiData }) | undefined = undefined;
   let lastScopeItem: (MidiStreamItem & { data: MidiData }) | undefined =
     undefined;
+  let pendingScopeItem: (MidiStreamItem & { data: MidiData }) | undefined =
+    undefined;
+  let scopeFrame: number | undefined = undefined;
+  let unsubscribeMidiStream: Unsubscriber | undefined = undefined;
   let configScriptLength = 0;
   let activity = false;
   let timer: ReturnType<typeof setTimeout> | undefined = undefined;
@@ -62,7 +66,7 @@
     });
     worker.onmessage = handleWorkerMessage;
 
-    midi_stream.subscribe((s) => {
+    unsubscribeMidiStream = midi_stream.subscribe((s) => {
       if (!mounted) {
         return;
       }
@@ -83,7 +87,14 @@
   });
 
   onDestroy(() => {
-    worker.terminate();
+    unsubscribeMidiStream?.();
+    worker?.terminate();
+    if (scopeFrame !== undefined) {
+      cancelAnimationFrame(scopeFrame);
+    }
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   });
 
   $: handleUserInputChange($user_input);
@@ -123,7 +134,7 @@
       }
       case MidiType.MIDI: {
         const midiItem = item as MidiStreamItem & { data: MidiData };
-        lastScopeItem = midiItem;
+        queueScopeItem(midiItem);
         midi_messages.update((s) => {
           let result = [...s, midiItem];
           if (result.length > maxMessageCount) {
@@ -134,6 +145,21 @@
         break;
       }
     }
+  }
+
+  function queueScopeItem(item: MidiStreamItem & { data: MidiData }) {
+    pendingScopeItem = item;
+    if (scopeFrame !== undefined) {
+      return;
+    }
+
+    scopeFrame = requestAnimationFrame(flushScopeItem);
+  }
+
+  function flushScopeItem() {
+    scopeFrame = undefined;
+    lastScopeItem = pendingScopeItem;
+    pendingScopeItem = undefined;
   }
 
   function handleUserInputChange(ui: UserInputValue) {
@@ -178,6 +204,11 @@
   function onClearClicked() {
     last = undefined;
     lastScopeItem = undefined;
+    pendingScopeItem = undefined;
+    if (scopeFrame !== undefined) {
+      cancelAnimationFrame(scopeFrame);
+      scopeFrame = undefined;
+    }
     midi_stream.clear();
     debug_monitor_store.update((s) => {
       s = [];
@@ -403,6 +434,8 @@
                   scrollDirection="vertical"
                   scrollToIndex={lastMidiMessageIndex}
                 >
+                  <!-- svelte-ignore a11y-no-static-element-interactions -->
+                  <!-- svelte-ignore a11y-mouse-events-have-key-events -->
                   <div
                     slot="item"
                     let:index
