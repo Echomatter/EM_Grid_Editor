@@ -14,6 +14,14 @@
     value: number;
   };
 
+  type LastSeenCc = {
+    channel: number;
+    cc: number;
+    value: number;
+    sourceLabel: string;
+    deviceName: string;
+  };
+
   const channels = Array.from({ length: 16 }, (_, i) => i + 1);
   const ccNumbers = Array.from({ length: 128 }, (_, i) => i);
   const maxHistoryLength = 128;
@@ -27,8 +35,7 @@
   let learning = true;
   let frozen = false;
   let history: CcScopePoint[] = [];
-  let lastSeenCc: { channel: number; cc: number; value: number } | undefined =
-    undefined;
+  let lastSeenCc: LastSeenCc | undefined = undefined;
   let ignoredCount = 0;
   let lastProcessedBatchId: MidiStreamItem["id"] | undefined = undefined;
 
@@ -97,7 +104,9 @@
     const channel = normalizeChannel(item.data.channel);
     const cc = clampCcNumber(item.data.params.p1.value);
     const value = clampMidiValue(item.data.params.p2.value);
-    lastSeenCc = { channel, cc, value };
+    const sourceLabel = getDirectionLabel(item.data.direction);
+    const deviceName = item.device?.name ?? "Unknown device";
+    lastSeenCc = { channel, cc, value, sourceLabel, deviceName };
 
     if (learning || !selectedChannel || !selectedCc) {
       selectedChannel = String(channel);
@@ -213,6 +222,10 @@
     return Math.max(0, Math.min(127, value));
   }
 
+  function getDirectionLabel(direction: string) {
+    return direction === "REPORT" ? "RX" : "TX";
+  }
+
   function roundForSvg(value: number) {
     return Number(value.toFixed(2));
   }
@@ -269,7 +282,7 @@
         <span class="bg-secondary px-1 truncate text-xs">Last Seen CC</span>
         <span class="px-2 truncate">
           {lastSeenCc
-            ? `Ch ${lastSeenCc.channel} / CC ${lastSeenCc.cc} = ${lastSeenCc.value}`
+            ? `${lastSeenCc.sourceLabel} ${lastSeenCc.deviceName}: Ch ${lastSeenCc.channel} / CC ${lastSeenCc.cc} = ${lastSeenCc.value}`
             : "---"}
         </span>
       </div>
