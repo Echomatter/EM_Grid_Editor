@@ -32,6 +32,8 @@
   let debug = false;
   let hover = false;
   let last: (MidiStreamItem & { data: MidiData }) | undefined = undefined;
+  let lastScopeItem: (MidiStreamItem & { data: MidiData }) | undefined =
+    undefined;
   let configScriptLength = 0;
   let activity = false;
   let timer: ReturnType<typeof setTimeout> | undefined = undefined;
@@ -120,8 +122,10 @@
         break;
       }
       case MidiType.MIDI: {
+        const midiItem = item as MidiStreamItem & { data: MidiData };
+        lastScopeItem = midiItem;
         midi_messages.update((s) => {
-          let result = [...s, item as MidiStreamItem & { data: MidiData }];
+          let result = [...s, midiItem];
           if (result.length > maxMessageCount) {
             result.shift();
           }
@@ -173,6 +177,7 @@
 
   function onClearClicked() {
     last = undefined;
+    lastScopeItem = undefined;
     midi_stream.clear();
     debug_monitor_store.update((s) => {
       s = [];
@@ -295,7 +300,7 @@
       </div>
     </div>
 
-    <CcScope />
+    <CcScope incoming={lastScopeItem} />
   {/if}
 
   <div class="overflow-hidden flex flex-col h-full">
