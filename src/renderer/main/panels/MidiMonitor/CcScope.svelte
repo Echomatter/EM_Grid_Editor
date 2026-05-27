@@ -3,24 +3,9 @@
     type MidiData,
     type MidiStreamItem,
   } from "./MidiMonitor.store";
+  import { createMidiCcScopeStore } from "./MidiScope.store";
 
   export let incomingItems: (MidiStreamItem & { data: MidiData })[] = [];
-
-  type CcScopePoint = {
-    id: MidiStreamItem["id"];
-    time: number;
-    channel: number;
-    cc: number;
-    value: number;
-  };
-
-  type LastSeenCc = {
-    channel: number;
-    cc: number;
-    value: number;
-    sourceLabel: string;
-    deviceName: string;
-  };
 
   const channels = Array.from({ length: 16 }, (_, i) => i + 1);
   const ccNumbers = Array.from({ length: 128 }, (_, i) => i);
@@ -29,212 +14,71 @@
   const svgHeight = 96;
   const centerLineY = svgHeight / 2;
   const viewBox = `0 0 ${svgWidth} ${svgHeight}`;
+  const scope = createMidiCcScopeStore({
+    maxHistoryLength,
+    svgWidth,
+    svgHeight,
+  });
 
   let selectedChannel = "";
   let selectedCc = "";
-  let learning = true;
-  let frozen = false;
-  let history: CcScopePoint[] = [];
-  let lastSeenCc: LastSeenCc | undefined = undefined;
-  let ignoredCount = 0;
   let lastProcessedBatchId: MidiStreamItem["id"] | undefined = undefined;
 
   $: if (incomingItems.length > 0) {
     const batchTailId = incomingItems[incomingItems.length - 1].id;
     if (batchTailId !== lastProcessedBatchId) {
-      handleIncomingBatch(incomingItems);
+      scope.addBatch(incomingItems);
       lastProcessedBatchId = batchTailId;
     }
   }
 
-  $: if (incomingItems.length === 0 && lastProcessedBatchId !== undefined) {
-    resetScopeState();
-  }
-
-  $: historyValues = history.map((point) => point.value);
-
-  $: latestValue = history.length > 0 ? history[history.length - 1].value : undefined;
-
-  $: minValue =
-    historyValues.length > 0 ? Math.min(...historyValues) : undefined;
-
-  $: maxValue =
-    historyValues.length > 0 ? Math.max(...historyValues) : undefined;
-
-  $: rangeValue =
-    minValue === undefined || maxValue === undefined ? "---" : maxValue - minValue;
-
-  $: selectedLabel = selectedChannel && selectedCc
-    ? `Ch ${selectedChannel} / CC ${selectedCc}`
-    : learning
-      ? "Learning next CC"
-      : "No CC selected";
-
-  $: scopeStatus = frozen
-    ? "Frozen"
-    : learning
-      ? "Learning"
-      : selectedChannel && selectedCc
-        ? "Recording"
-        : "Waiting";
-
-  $: polylinePoints = buildPolyline(history);
-
-  $: latestLineY =
-    latestValue === undefined ? undefined : valueToY(latestValue);
-
-  $: stats = [
-    { label: "Channel", value: selectedChannel || "---" },
-    { label: "CC", value: selectedCc || "---" },
-    { label: "Latest", value: latestValue ?? "---" },
-    { label: "Range", value: rangeValue },
-  ];
-
-  function handleIncomingBatch(items: (MidiStreamItem & { data: MidiData })[]) {
-    for (const item of items) {
-      handleIncoming(item);
-    }
-  }
-
-  function handleIncoming(item: MidiStreamItem & { data: MidiData }) {
-    if (!isControlChange(item)) {
-      return;
-    }
-
-    const channel = normalizeChannel(item.data.channel);
-    const cc = clampCcNumber(item.data.params.p1.value);
-    const value = clampMidiValue(item.data.params.p2.value);
-    const sourceLabel = getDirectionLabel(item.data.direction);
-    const deviceName = item.device?.name ?? "Unknown device";
-    lastSeenCc = { channel, cc, value, sourceLabel, deviceName };
-
-    if (learning || !selectedChannel || !selectedCc) {
-      selectedChannel = String(channel);
-      selectedCc = String(cc);
-      learning = false;
-      resetTrace();
-    }
-
-    if (!matchesSelection(channel, cc)) {
-      ignoredCount += 1;
-      return;
-    }
-
-    if (frozen) {
-      return;
-    }
-
-    pushHistory({
-      id: item.id,
-      time: item.date,
-      channel,
-      cc,
-      value,
-    });
-  }
-
-  function isControlChange(item: MidiStreamItem & { data: MidiData }) {
-    return (
-      item.data.command.short === "CC" ||
-      item.data.command.name === "Control Change"
-    );
-  }
-
-  function matchesSelection(channel: number, cc: number) {
-    return String(channel) === selectedChannel && String(cc) === selectedCc;
-  }
-
-  function pushHistory(point: CcScopePoint) {
-    history = [...history, point].slice(-maxHistoryLength);
+  $: if (incomingItems.length === 0 && $scope.hasProcessedInput) {
+    scope.reset();
+    selectedChannel = "";
+    selectedCc = "";
+    lastProcessedBatchId = undefined;
   }
 
   function armLearn() {
     selectedChannel = "";
     selectedCc = "";
-    learning = true;
-    frozen = false;
-    resetTrace();
+    lastProcessedBatchId = undefined;
+    scope.learnNextCc();
   }
 
   function toggleFreeze() {
-    frozen = !frozen;
+    scope.toggleFreeze();
   }
 
   function clearScope() {
-    resetTrace();
-    ignoredCount = 0;
-  }
-
-  function resetTrace() {
-    history = [];
-  }
-
-  function resetScopeState() {
-    selectedChannel = "";
-    selectedCc = "";
-    learning = true;
-    frozen = false;
-    history = [];
-    lastSeenCc = undefined;
-    ignoredCount = 0;
-    lastProcessedBatchId = undefined;
+    scope.clearScope();
   }
 
   function handleManualSelection() {
-    learning = !(selectedChannel && selectedCc);
-    frozen = false;
-    resetTrace();
+    lastProcessedBatchId = undefined;
+    scope.setSelection(selectedChannel, selectedCc);
   }
 
-  function buildPolyline(points: CcScopePoint[]) {
-    if (points.length === 0) {
-      return "";
-    }
-
-    if (points.length === 1) {
-      const y = valueToY(points[0].value);
-      return `0,${y} ${svgWidth},${y}`;
-    }
-
-    return points
-      .map((point, index) => {
-        const x = (index / (points.length - 1)) * svgWidth;
-        const y = valueToY(point.value);
-        return `${roundForSvg(x)},${y}`;
-      })
-      .join(" ");
+  $: if ($scope.selectedChannel !== selectedChannel) {
+    selectedChannel = $scope.selectedChannel;
   }
 
-  function normalizeChannel(rawChannel: number) {
-    return Math.max(1, Math.min(16, rawChannel + 1));
+  $: if ($scope.selectedCc !== selectedCc) {
+    selectedCc = $scope.selectedCc;
   }
 
-  function clampCcNumber(value: number) {
-    return Math.max(0, Math.min(127, value));
-  }
-
-  function valueToY(value: number) {
-    const normalizedValue = clampMidiValue(value) / 127;
-    return roundForSvg(svgHeight - normalizedValue * svgHeight);
-  }
-
-  function clampMidiValue(value: number) {
-    return Math.max(0, Math.min(127, value));
-  }
-
-  function getDirectionLabel(direction: string) {
-    return direction === "REPORT" ? "RX" : "TX";
-  }
-
-  function roundForSvg(value: number) {
-    return Number(value.toFixed(2));
-  }
+  $: stats = [
+    { label: "Channel", value: $scope.selectedChannel || "---" },
+    { label: "CC", value: $scope.selectedCc || "---" },
+    { label: "Latest", value: $scope.latestValue ?? "---" },
+    { label: "Range", value: $scope.rangeValue },
+  ];
 </script>
 
 <div class="border-gray-700 border rounded flex flex-col mb-4 overflow-hidden">
   <div class="flex flex-row items-center justify-between bg-secondary px-2 py-1 gap-2">
     <span class="text-white truncate">CC Scope</span>
-    <span class="text-gray-300 text-xs truncate">{selectedLabel}</span>
+    <span class="text-gray-300 text-xs truncate">{$scope.selectedLabel}</span>
   </div>
 
   <div class="flex flex-col gap-3 p-3 text-white">
@@ -281,18 +125,18 @@
       <div class="border-gray-700 border rounded flex flex-col overflow-hidden col-span-2">
         <span class="bg-secondary px-1 truncate text-xs">Last Seen CC</span>
         <span class="px-2 truncate">
-          {lastSeenCc
-            ? `${lastSeenCc.sourceLabel} ${lastSeenCc.deviceName}: Ch ${lastSeenCc.channel} / CC ${lastSeenCc.cc} = ${lastSeenCc.value}`
+          {$scope.lastSeenCc
+            ? `${$scope.lastSeenCc.sourceLabel} ${$scope.lastSeenCc.deviceName}: Ch ${$scope.lastSeenCc.channel} / CC ${$scope.lastSeenCc.cc} = ${$scope.lastSeenCc.value}`
             : "---"}
         </span>
       </div>
       <div class="border-gray-700 border rounded flex flex-col overflow-hidden">
         <span class="bg-secondary px-1 truncate text-xs">Min</span>
-        <span class="px-2 truncate">{minValue ?? "---"}</span>
+        <span class="px-2 truncate">{$scope.minValue ?? "---"}</span>
       </div>
       <div class="border-gray-700 border rounded flex flex-col overflow-hidden">
         <span class="bg-secondary px-1 truncate text-xs">Max</span>
-        <span class="px-2 truncate">{maxValue ?? "---"}</span>
+        <span class="px-2 truncate">{$scope.maxValue ?? "---"}</span>
       </div>
     </div>
 
@@ -320,9 +164,9 @@
         opacity="0.15"
       />
 
-      {#if polylinePoints}
+      {#if $scope.points}
         <polyline
-          points={polylinePoints}
+          points={$scope.points}
           fill="none"
           stroke="currentColor"
           stroke-width="3"
@@ -342,12 +186,12 @@
         </text>
       {/if}
 
-      {#if latestLineY !== undefined}
+      {#if $scope.latestLineY !== undefined}
         <line
           x1="0"
-          y1={latestLineY}
+          y1={$scope.latestLineY}
           x2={svgWidth}
-          y2={latestLineY}
+          y2={$scope.latestLineY}
           stroke="currentColor"
           opacity="0.35"
           stroke-dasharray="4 4"
@@ -364,13 +208,13 @@
         Learn Next CC
       </button>
       <button
-        class="bg-secondary border border-gray-700 rounded px-3 py-1 {frozen
+        class="bg-secondary border border-gray-700 rounded px-3 py-1 {$scope.frozen
           ? 'text-yellow-400'
           : 'text-white'}"
         type="button"
         on:click={toggleFreeze}
       >
-        {frozen ? "Resume" : "Freeze"}
+        {$scope.frozen ? "Resume" : "Freeze"}
       </button>
       <button
         class="bg-secondary border border-gray-700 rounded px-3 py-1 text-white"
@@ -380,7 +224,7 @@
         Clear Scope
       </button>
       <span class="text-gray-300 text-xs truncate">
-        {scopeStatus} · Samples {history.length}/{maxHistoryLength} · Ignored {ignoredCount}
+        {$scope.scopeStatus} · Samples {$scope.history.length}/{maxHistoryLength} · Ignored {$scope.ignoredCount}
       </span>
     </div>
   </div>
