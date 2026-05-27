@@ -33,7 +33,11 @@ export type MidiCcScopeState = {
   latestLineY: number | undefined;
   selectedLabel: string;
   scopeStatus: string;
+  statusHint: string;
   hasProcessedInput: boolean;
+  inputDroppedCount: number;
+  historyDroppedCount: number;
+  overloadCount: number;
 };
 
 type MidiCcScopeOptions = {
@@ -58,16 +62,24 @@ export function createMidiCcScopeStore(options: MidiCcScopeOptions = {}) {
   let selectedCc = "";
   let learning = true;
   let frozen = false;
-  let history: MidiCcScopePoint[] = [];
   let lastSeenCc: LastSeenCc | undefined = undefined;
   let ignoredCount = 0;
   let lastProcessedBatchId: MidiStreamItem["id"] | undefined = undefined;
   let hasProcessedInput = false;
+  let inputDroppedCount = 0;
+  let historyDroppedCount = 0;
 
+  const historyBuffer = createRingBuffer<MidiCcScopePoint>(maxHistoryLength);
   const store = writable<MidiCcScopeState>(buildState());
 
-  function addBatch(items: (MidiStreamItem & { data: MidiData })[]) {
+  function addBatch(
+    items: (MidiStreamItem & { data: MidiData })[],
+    droppedBeforeBatch = inputDroppedCount,
+  ) {
+    inputDroppedCount = Math.max(inputDroppedCount, droppedBeforeBatch);
+
     if (items.length === 0) {
+      publish();
       return;
     }
 
@@ -109,17 +121,24 @@ export function createMidiCcScopeStore(options: MidiCcScopeOptions = {}) {
       return;
     }
 
+    // Freeze is intentionally a display/trace freeze. The scope still records
+    // lastSeenCc above so the user can see live traffic continues, but it does
+    // not append points or move the visible waveform until resumed.
     if (frozen) {
       return;
     }
 
-    pushHistory({
-      id: item.id,
-      time: item.date,
-      channel,
-      cc,
-      value,
-    });
+    if (
+      historyBuffer.push({
+        id: item.id,
+        time: item.date,
+        channel,
+        cc,
+        value,
+      })
+    ) {
+      historyDroppedCount += 1;
+    }
   }
 
   function setSelection(channel: string, cc: string) {
@@ -156,23 +175,22 @@ export function createMidiCcScopeStore(options: MidiCcScopeOptions = {}) {
     selectedCc = "";
     learning = true;
     frozen = false;
-    history = [];
+    historyBuffer.clear();
     lastSeenCc = undefined;
     ignoredCount = 0;
     lastProcessedBatchId = undefined;
     hasProcessedInput = false;
+    inputDroppedCount = 0;
+    historyDroppedCount = 0;
     publish();
   }
 
   function resetTrace(shouldPublish = true) {
-    history = [];
+    historyBuffer.clear();
+    historyDroppedCount = 0;
     if (shouldPublish) {
       publish();
     }
-  }
-
-  function pushHistory(point: MidiCcScopePoint) {
-    history = [...history, point].slice(-maxHistoryLength);
   }
 
   function publish() {
@@ -180,19 +198,21 @@ export function createMidiCcScopeStore(options: MidiCcScopeOptions = {}) {
   }
 
   function buildState(): MidiCcScopeState {
+    const history = historyBuffer.values();
     const historyValues = history.map((point) => point.value);
     const latestValue = history.length > 0 ? history[history.length - 1].value : undefined;
     const minValue = historyValues.length > 0 ? Math.min(...historyValues) : undefined;
     const maxValue = historyValues.length > 0 ? Math.max(...historyValues) : undefined;
     const rangeValue =
       minValue === undefined || maxValue === undefined ? "---" : maxValue - minValue;
+    const overloadCount = inputDroppedCount + historyDroppedCount;
 
     return {
       selectedChannel,
       selectedCc,
       learning,
       frozen,
-      history: [...history],
+      history,
       lastSeenCc,
       ignoredCount,
       latestValue,
@@ -203,7 +223,11 @@ export function createMidiCcScopeStore(options: MidiCcScopeOptions = {}) {
       latestLineY: latestValue === undefined ? undefined : valueToY(latestValue),
       selectedLabel: buildSelectedLabel(),
       scopeStatus: buildScopeStatus(),
+      statusHint: buildStatusHint(overloadCount),
       hasProcessedInput,
+      inputDroppedCount,
+      historyDroppedCount,
+      overloadCount,
     };
   }
 
@@ -217,7 +241,7 @@ export function createMidiCcScopeStore(options: MidiCcScopeOptions = {}) {
 
   function buildScopeStatus() {
     if (frozen) {
-      return "Frozen";
+      return "Frozen display";
     }
 
     if (learning) {
@@ -225,6 +249,26 @@ export function createMidiCcScopeStore(options: MidiCcScopeOptions = {}) {
     }
 
     return selectedChannel && selectedCc ? "Recording" : "Waiting";
+  }
+
+  function buildStatusHint(overloadCount: number) {
+    if (overloadCount > 0) {
+      return `Newest samples win; ${overloadCount} older sample(s) dropped.`;
+    }
+
+    if (frozen) {
+      return "Display frozen; live last-seen CC still updates.";
+    }
+
+    if (learning) {
+      return "Learning from next live CC.";
+    }
+
+    if (selectedChannel && selectedCc) {
+      return "Locked to selected CC.";
+    }
+
+    return "Waiting for CC selection.";
   }
 
   function buildPolyline(points: MidiCcScopePoint[]) {
@@ -247,6 +291,12 @@ export function createMidiCcScopeStore(options: MidiCcScopeOptions = {}) {
   }
 
   function isControlChange(item: MidiStreamItem & { data: MidiData }) {
+    const commandValue = item.data.command.value;
+
+    if (Number.isInteger(commandValue)) {
+      return (commandValue & 0xf0) === 0xb0;
+    }
+
     return (
       item.data.command.short === "CC" ||
       item.data.command.name === "Control Change"
@@ -290,5 +340,37 @@ export function createMidiCcScopeStore(options: MidiCcScopeOptions = {}) {
     toggleFreeze,
     clearScope,
     reset,
+  };
+}
+
+function createRingBuffer<T>(capacity: number) {
+  const buffer = new Array<T>(capacity);
+  let start = 0;
+  let length = 0;
+
+  return {
+    push(value: T) {
+      const dropped = length === capacity;
+      const writeIndex = (start + length) % capacity;
+
+      if (dropped) {
+        buffer[start] = value;
+        start = (start + 1) % capacity;
+      } else {
+        buffer[writeIndex] = value;
+        length += 1;
+      }
+
+      return dropped;
+    },
+    values() {
+      return Array.from({ length }, (_, index) => {
+        return buffer[(start + index) % capacity];
+      });
+    },
+    clear() {
+      start = 0;
+      length = 0;
+    },
   };
 }
