@@ -22,6 +22,7 @@
   const svgWidth = 320;
   const svgHeight = 96;
   const centerLineY = svgHeight / 2;
+  const viewBox = `0 0 ${svgWidth} ${svgHeight}`;
 
   let selectedChannel = "";
   let selectedCc = "";
@@ -38,17 +39,19 @@
     handleIncoming(incoming);
   }
 
+  $: if (!incoming && lastIncomingId !== undefined) {
+    resetScopeState();
+  }
+
+  $: historyValues = history.map((point) => point.value);
+
   $: latestValue = history.length > 0 ? history[history.length - 1].value : undefined;
 
   $: minValue =
-    history.length > 0
-      ? Math.min(...history.map((point) => point.value))
-      : undefined;
+    historyValues.length > 0 ? Math.min(...historyValues) : undefined;
 
   $: maxValue =
-    history.length > 0
-      ? Math.max(...history.map((point) => point.value))
-      : undefined;
+    historyValues.length > 0 ? Math.max(...historyValues) : undefined;
 
   $: rangeValue =
     minValue === undefined || maxValue === undefined ? "---" : maxValue - minValue;
@@ -84,8 +87,8 @@
       return;
     }
 
-    const channel = item.data.channel + 1;
-    const cc = item.data.params.p1.value;
+    const channel = normalizeChannel(item.data.channel);
+    const cc = clampCcNumber(item.data.params.p1.value);
     const value = clampMidiValue(item.data.params.p2.value);
     lastSeenCc = { channel, cc, value };
 
@@ -150,6 +153,17 @@
     history = [];
   }
 
+  function resetScopeState() {
+    selectedChannel = "";
+    selectedCc = "";
+    learning = true;
+    frozen = false;
+    history = [];
+    lastSeenCc = undefined;
+    ignoredCount = 0;
+    lastIncomingId = undefined;
+  }
+
   function handleManualSelection() {
     learning = !(selectedChannel && selectedCc);
     frozen = false;
@@ -173,6 +187,14 @@
         return `${roundForSvg(x)},${y}`;
       })
       .join(" ");
+  }
+
+  function normalizeChannel(rawChannel: number) {
+    return Math.max(1, Math.min(16, rawChannel + 1));
+  }
+
+  function clampCcNumber(value: number) {
+    return Math.max(0, Math.min(127, value));
   }
 
   function valueToY(value: number) {
@@ -256,7 +278,7 @@
 
     <svg
       class="w-full h-24 bg-secondary rounded border border-gray-700"
-      viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+      viewBox={viewBox}
       role="img"
       aria-label="MIDI CC scope waveform"
     >
