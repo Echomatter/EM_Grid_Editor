@@ -9,7 +9,6 @@
   import {
     midi_stream,
     MidiData,
-    type MidiStreamData,
     type MidiStreamItem,
     MidiType,
     SysExData,
@@ -22,20 +21,20 @@
   import MidiTester from "./MidiTester.svelte";
   import DebugTextList from "../DebugMonitor/DebugTextList.svelte";
   import { copyContextMenu } from "../../_actions/copy-context-menu.action";
-  import { onDestroy, onMount, tick } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import {
     type MidiWorkerCommand,
     type MidiWorkerResponse,
   } from "./midiWorker";
   import VirtualList from "svelte-tiny-virtual-list";
+  import CcScope from "./CcScope.svelte";
 
-  //Defines
   let debug = false;
   let hover = false;
-  let last = undefined;
+  let last: (MidiStreamItem & { data: MidiData }) | undefined = undefined;
   let configScriptLength = 0;
   let activity = false;
-  let timer = undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined = undefined;
   let event: GridEvent;
   let worker: Worker;
   let mounted = false;
@@ -74,7 +73,6 @@
     });
 
     for (const item of $midi_stream.buffer) {
-      // guard after svelte 5 migration
       if (item) {
         worker.postMessage({ item: item } as MidiWorkerCommand);
       }
@@ -87,8 +85,7 @@
   });
 
   $: handleUserInputChange($user_input);
-
-  $: configScriptLength = $event?.toLua().length ?? 0;
+  $: configScriptLength = event?.toLua().length ?? 0;
 
   $: if ($midi_stream) {
     showActivity();
@@ -162,7 +159,7 @@
     last = mms[mms.length - 1];
   }
 
-  function onEnterMidiMessage(element) {
+  function onEnterMidiMessage(element: MidiStreamItem & { data: MidiData }) {
     hover = true;
     last = element;
   }
@@ -209,6 +206,7 @@
 
     <Toggle bind:value={debug} title="Debug View" />
   </div>
+
   {#if !debug}
     <div class="py-8 px-6">
       <div class="border-gray-700 border rounded flex flex-col col-span-3 mb-2">
@@ -296,6 +294,8 @@
         </div>
       </div>
     </div>
+
+    <CcScope />
   {/if}
 
   <div class="overflow-hidden flex flex-col h-full">
@@ -338,8 +338,6 @@
                   scrollDirection="vertical"
                   scrollToIndex={lastMidiStreamItemIndex}
                 >
-                  <!-- svelte-ignore a11y-no-static-element-interactions -->
-                  <!-- svelte-ignore a11y-mouse-events-have-key-events -->
                   <div
                     slot="item"
                     let:index
@@ -400,8 +398,6 @@
                   scrollDirection="vertical"
                   scrollToIndex={lastMidiMessageIndex}
                 >
-                  <!-- svelte-ignore a11y-no-static-element-interactions -->
-                  <!-- svelte-ignore a11y-mouse-events-have-key-events -->
                   <div
                     slot="item"
                     let:index
@@ -507,8 +503,6 @@
                   scrollDirection="vertical"
                   scrollToIndex={lastSysExMessageIndex}
                 >
-                  <!-- svelte-ignore a11y-no-static-element-interactions -->
-                  <!-- svelte-ignore a11y-mouse-events-have-key-events -->
                   <div
                     slot="item"
                     let:index
