@@ -39,8 +39,8 @@
   let configScriptLength = 0;
   let activity = false;
   let timer: ReturnType<typeof setTimeout> | undefined = undefined;
-  let event: GridEvent;
-  let worker: Worker;
+  let event: GridEvent | undefined = undefined;
+  let worker: Worker | undefined = undefined;
   let mounted = false;
 
   let midiMessageListHeight: number;
@@ -66,7 +66,7 @@
     worker.onmessage = handleWorkerMessage;
 
     unsubscribeMidiStream = midi_stream.subscribe((s) => {
-      if (!mounted) {
+      if (!mounted || !worker) {
         return;
       }
       const incoming = s.last;
@@ -86,8 +86,10 @@
   });
 
   onDestroy(() => {
+    mounted = false;
     unsubscribeMidiStream?.();
     worker?.terminate();
+    worker = undefined;
     if (scopeFrame !== undefined) {
       cancelAnimationFrame(scopeFrame);
     }
