@@ -6,6 +6,8 @@
   import { createMidiCcScopeStore } from "./MidiScope.store";
 
   export let incomingItems: (MidiStreamItem & { data: MidiData })[] = [];
+  export let resetSignal = 0;
+  export let droppedInputCount = 0;
 
   const channels = Array.from({ length: 16 }, (_, i) => i + 1);
   const ccNumbers = Array.from({ length: 128 }, (_, i) => i);
@@ -23,20 +25,26 @@
   let selectedChannel = "";
   let selectedCc = "";
   let lastProcessedBatchId: MidiStreamItem["id"] | undefined = undefined;
+  let lastResetSignal = resetSignal;
+
+  $: if (resetSignal !== lastResetSignal) {
+    resetScopeFromParent();
+  }
 
   $: if (incomingItems.length > 0) {
     const batchTailId = incomingItems[incomingItems.length - 1].id;
     if (batchTailId !== lastProcessedBatchId) {
-      scope.addBatch(incomingItems);
+      scope.addBatch(incomingItems, droppedInputCount);
       lastProcessedBatchId = batchTailId;
     }
   }
 
-  $: if (incomingItems.length === 0 && $scope.hasProcessedInput) {
+  function resetScopeFromParent() {
     scope.reset();
     selectedChannel = "";
     selectedCc = "";
     lastProcessedBatchId = undefined;
+    lastResetSignal = resetSignal;
   }
 
   function armLearn() {
@@ -205,7 +213,7 @@
         type="button"
         on:click={armLearn}
       >
-        Learn Next CC
+        Learn Next Live CC
       </button>
       <button
         class="bg-secondary border border-gray-700 rounded px-3 py-1 {$scope.frozen
@@ -214,7 +222,7 @@
         type="button"
         on:click={toggleFreeze}
       >
-        {$scope.frozen ? "Resume" : "Freeze"}
+        {$scope.frozen ? "Resume Display" : "Freeze Display"}
       </button>
       <button
         class="bg-secondary border border-gray-700 rounded px-3 py-1 text-white"
@@ -224,8 +232,10 @@
         Clear Scope
       </button>
       <span class="text-gray-300 text-xs truncate">
-        {$scope.scopeStatus} · Samples {$scope.history.length}/{maxHistoryLength} · Ignored {$scope.ignoredCount}
+        {$scope.scopeStatus} · Samples {$scope.history.length}/{maxHistoryLength} · Ignored {$scope.ignoredCount} · Dropped {$scope.overloadCount}
       </span>
     </div>
+
+    <div class="text-gray-300 text-xs truncate">{$scope.statusHint}</div>
   </div>
 </div>
