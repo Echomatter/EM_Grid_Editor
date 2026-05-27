@@ -8,13 +8,13 @@
   import { debug_monitor_store } from "../DebugMonitor/DebugMonitor.store";
   import {
     midi_stream,
-    MidiData,
+    type MidiData,
     type MidiStreamItem,
     MidiType,
-    SysExData,
+    type SysExData,
   } from "./MidiMonitor.store";
   import { MoltenPushButton, SvgIcon, Toggle } from "@intechstudio/grid-uikit";
-  import { GridEvent } from "../../../runtime/runtime";
+  import type { GridEvent } from "../../../runtime/runtime";
   import { runtime_manager } from "../../../runtime/runtime-manager.store";
   import { appSettings } from "../../../runtime/app-helper.store";
   import { Grid } from "../../../lib/_utils";
@@ -149,7 +149,14 @@
   }
 
   function queueScopeItem(item: MidiStreamItem & { data: MidiData }) {
-    pendingScopeItems = [...pendingScopeItems, item].slice(-maxScopeBatchLength);
+    pendingScopeItems.push(item);
+    if (pendingScopeItems.length > maxScopeBatchLength) {
+      pendingScopeItems.splice(
+        0,
+        pendingScopeItems.length - maxScopeBatchLength,
+      );
+    }
+
     if (scopeFrame !== undefined) {
       return;
     }
@@ -163,8 +170,8 @@
       return;
     }
 
-    scopeItems = pendingScopeItems;
-    pendingScopeItems = [];
+    scopeItems = [...pendingScopeItems];
+    pendingScopeItems.length = 0;
   }
 
   function handleUserInputChange(ui: UserInputValue) {
@@ -209,7 +216,7 @@
   function onClearClicked() {
     last = undefined;
     scopeItems = [];
-    pendingScopeItems = [];
+    pendingScopeItems.length = 0;
     if (scopeFrame !== undefined) {
       cancelAnimationFrame(scopeFrame);
       scopeFrame = undefined;
