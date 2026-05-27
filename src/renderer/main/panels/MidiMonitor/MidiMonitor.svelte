@@ -35,6 +35,8 @@
   let scopeItems: (MidiStreamItem & { data: MidiData })[] = [];
   let pendingScopeItems: (MidiStreamItem & { data: MidiData })[] = [];
   let scopeFrame: number | undefined = undefined;
+  let scopeResetSignal = 0;
+  let droppedScopeInputCount = 0;
   let unsubscribeMidiStream: Unsubscriber | undefined = undefined;
   let configScriptLength = 0;
   let activity = false;
@@ -49,6 +51,7 @@
 
   const maxMessageCount = 1024;
   const maxScopeBatchLength = 1024;
+  const replayedMessageIds = new Set<MidiStreamItem["id"]>();
 
   let lastMidiMessageIndex = 0;
   let lastSysExMessageIndex = 0;
@@ -77,8 +80,10 @@
       worker.postMessage({ item: incoming } as MidiWorkerCommand);
     });
 
+    replayedMessageIds.clear();
     for (const item of $midi_stream.buffer) {
       if (item) {
+        replayedMessageIds.add(item.id);
         worker.postMessage({ item: item } as MidiWorkerCommand);
       }
     }
@@ -90,6 +95,7 @@
     unsubscribeMidiStream?.();
     worker?.terminate();
     worker = undefined;
+    replayedMessageIds.clear();
     if (scopeFrame !== undefined) {
       cancelAnimationFrame(scopeFrame);
     }
@@ -135,7 +141,9 @@
       }
       case MidiType.MIDI: {
         const midiItem = item as MidiStreamItem & { data: MidiData };
-        queueScopeItem(midiItem);
+        if (!replayedMessageIds.delete(midiItem.id)) {
+          queueScopeItem(midiItem);
+        }
         midi_messages.update((s) => {
           let result = [...s, midiItem];
           if (result.length > maxMessageCount) {
@@ -151,10 +159,9 @@
   function queueScopeItem(item: MidiStreamItem & { data: MidiData }) {
     pendingScopeItems.push(item);
     if (pendingScopeItems.length > maxScopeBatchLength) {
-      pendingScopeItems.splice(
-        0,
-        pendingScopeItems.length - maxScopeBatchLength,
-      );
+      const overflow = pendingScopeItems.length - maxScopeBatchLength;
+      droppedScopeInputCount += overflow;
+      pendingScopeItems.splice(0, overflow);
     }
 
     if (scopeFrame !== undefined) {
@@ -172,6 +179,18 @@
 
     scopeItems = [...pendingScopeItems];
     pendingScopeItems.length = 0;
+  }
+
+  function resetScopeQueue() {
+    scopeItems = [];
+    pendingScopeItems.length = 0;
+    droppedScopeInputCount = 0;
+    replayedMessageIds.clear();
+    if (scopeFrame !== undefined) {
+      cancelAnimationFrame(scopeFrame);
+      scopeFrame = undefined;
+    }
+    scopeResetSignal += 1;
   }
 
   function handleUserInputChange(ui: UserInputValue) {
@@ -215,12 +234,7 @@
 
   function onClearClicked() {
     last = undefined;
-    scopeItems = [];
-    pendingScopeItems.length = 0;
-    if (scopeFrame !== undefined) {
-      cancelAnimationFrame(scopeFrame);
-      scopeFrame = undefined;
-    }
+    resetScopeQueue();
     midi_stream.clear();
     debug_monitor_store.update((s) => {
       s = [];
@@ -343,7 +357,11 @@
       </div>
     </div>
 
-    <CcScope incomingItems={scopeItems} />
+    <CcScope
+      incomingItems={scopeItems}
+      resetSignal={scopeResetSignal}
+      droppedInputCount={droppedScopeInputCount}
+    />
   {/if}
 
   <div class="overflow-hidden flex flex-col h-full">
