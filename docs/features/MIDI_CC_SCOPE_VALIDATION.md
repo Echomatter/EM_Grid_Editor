@@ -31,14 +31,40 @@ The CC scope mirrors that style:
 
 ```text
 decoded MIDI Monitor stream
-  -> animation-frame batched MIDI items
+  -> live-only animation-frame batched MIDI items
   -> CC-only MidiScope.store.ts
-  -> bounded selected-CC history
+  -> bounded selected-CC ring buffer
   -> SVG polyline point string
   -> CcScope.svelte display
 ```
 
 Canvas should only be considered if local profiling shows SVG cannot handle real CC traffic.
+
+## Hardened behavior
+
+### Explicit reset path
+
+`MidiMonitor.svelte` owns monitor-level reset intent. Clear All calls `resetScopeQueue()`, clears the pending scope batch, cancels any pending animation frame, resets dropped input counters, and increments `scopeResetSignal`. `CcScope.svelte` resets only when this explicit signal changes.
+
+### Live-only learning
+
+The MIDI Monitor still replays its existing buffer into the worker on mount so the normal MIDI Monitor list behaves as before. Replayed message IDs are tracked in `replayedMessageIds` and are excluded from the CC scope queue. This prevents Learn mode from accidentally selecting an old buffered CC.
+
+### Control Change detection
+
+`MidiScope.store.ts` prefers the decoded numeric command value: `(command.value & 0xf0) === 0xb0`. String checks remain only as a fallback.
+
+### Bounded history and overload policy
+
+The scope uses a fixed-size ring buffer for selected-CC history. When the history is full, newest samples win and the oldest sample is overwritten. The parent pending batch is also bounded. When the pending batch overflows, newest samples win and the oldest pending input samples are dropped. Dropped counts are surfaced in the scope UI so overload is not silent.
+
+### Freeze semantics
+
+Freeze is a display/trace freeze. While frozen, the waveform does not append new points, but the last-seen CC label can still update so the user can tell live traffic continues. The UI labels this as `Freeze Display` / `Resume Display`.
+
+### SVG sizing
+
+The scope uses a fixed internal SVG viewBox as a normalized coordinate system and allows the SVG element itself to scale with `w-full h-24`. This keeps the graph math deterministic while still letting the panel width resize.
 
 ## Static review notes
 
@@ -51,16 +77,18 @@ Required code shape:
 ```ts
 case MidiType.MIDI: {
   const midiItem = item as MidiStreamItem & { data: MidiData };
-  queueScopeItem(midiItem);
+  if (!replayedMessageIds.delete(midiItem.id)) {
+    queueScopeItem(midiItem);
+  }
   midi_messages.update(...);
 }
 ```
 
 ### Store responsibility
 
-`MidiScope.store.ts` filters already-decoded CC messages, maintains selected CC state, maintains a bounded history, and exposes an SVG point string plus stats.
+`MidiScope.store.ts` filters already-decoded CC messages, maintains selected CC state, maintains a bounded ring buffer, tracks overload counts, and exposes an SVG point string plus stats.
 
-`CcScope.svelte` should stay mostly presentational.
+`CcScope.svelte` stays mostly presentational. It accepts incoming batches, a reset signal, and a dropped-input count from the parent seam.
 
 ### Expected file footprint
 
@@ -76,7 +104,7 @@ docs/features/MIDI_CC_SCOPE_VALIDATION.md
 After checkout:
 
 ```bash
-git checkout feature/midi-cc-scope-grid-native-refine
+git checkout feature/midi-cc-scope-hardening-pass
 npm i
 npm run electron-dev
 ```
@@ -88,13 +116,14 @@ Manual validation:
 | Open MIDI Monitor | Existing monitor opens normally. |
 | Debug View off | CC Scope appears adjacent to the monitor summary/list. |
 | Debug View on | Existing raw/debug monitor behavior remains available. |
-| Move any CC while learning | Scope locks to that channel/CC. |
+| Open with prior monitor history | Scope stays in learn/wait state until a new live CC arrives. |
+| Move any live CC while learning | Scope locks to that channel/CC. |
 | Send steady CC | Flat waveform line. |
 | Send LFO CC | Recognizable scrolling waveform. |
 | Send non-CC MIDI | Normal monitor sees it; scope does not add waveform points. |
 | Send SysEx | SysEx list works; scope does not plot it. |
-| Freeze | Waveform stops appending while monitor continues. |
-| Resume | Waveform appends again. |
+| Freeze Display | Waveform stops appending while last-seen CC can continue updating. |
+| Resume Display | Waveform appends again. |
 | Clear Scope | Scope trace clears only. |
 | Clear All | Existing monitor and scope both reset. |
-| Fast traffic | History remains capped and UI remains usable. |
+| Fast traffic | History remains capped, dropped count is visible if overflow occurs, and UI remains usable. |
